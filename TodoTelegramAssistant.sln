@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.1.32228.430
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TodoTelegramAssistant", "TodoTelegramAssistant\TodoTelegramAssistant.csproj", "{E794C685-CC43-482E-8B0E-02997F4315D2}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{E794C685-CC43-482E-8B0E-02997F4315D2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E794C685-CC43-482E-8B0E-02997F4315D2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E794C685-CC43-482E-8B0E-02997F4315D2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E794C685-CC43-482E-8B0E-02997F4315D2}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {68D567B3-D16F-4F2D-88F8-9AAC22A9BB49}
+	EndGlobalSection
+EndGlobal
