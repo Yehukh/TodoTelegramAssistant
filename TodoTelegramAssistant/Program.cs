@@ -11,9 +11,26 @@ using File = System.IO.File;
 using System.Speech.Synthesis;
 using System.Speech.AudioFormat;
 using Microsoft.Extensions.Configuration;
+using System.Globalization;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.DependencyInjection;
+using Telegram.Bot.Types.ReplyMarkups;
 
 var configuration = new ConfigurationBuilder()
 .AddUserSecrets<Program>().Build();
+
+using IHost host = Host.CreateDefaultBuilder(args)
+    .ConfigureServices(services =>
+    {
+        services.AddLocalization(options =>
+        {
+            options.ResourcesPath = "Resources";
+        });
+        services.AddTransient<LocalizationService>();
+    }).Build();
+
+IServiceProvider services = host.Services;
+LocalizationService localizationService = services.GetRequiredService<LocalizationService>();
 
 var botClient = new TelegramBotClient(configuration["TelegramBotApiKey"]);
 
@@ -25,7 +42,11 @@ var receiverOptions = new ReceiverOptions
     AllowedUpdates = Array.Empty<UpdateType>() // receive all update types
 };
 
-Model model = new Model(configuration["UkrainianSTTModelPath"]);
+Model ukrainianModel = new Model(configuration["UkrainianSTTModelPath"]);
+Model englishModel = new Model(configuration["EnglishSTTModelPath"]);
+
+var path = System.Reflection.Assembly.GetExecutingAssembly().Location;
+path = Path.GetDirectoryName(path);
 
 botClient.StartReceiving(
     updateHandler: HandleUpdateAsync,
@@ -38,30 +59,153 @@ var me = await botClient.GetMeAsync();
 Console.WriteLine($"Start listening for @{me.Username}");
 Console.ReadLine();
 
-// Send cancellation request to stop bot
 cts.Cancel();
 
 async Task HandleUpdateAsync(ITelegramBotClient botClient, Update update, CancellationToken cancellationToken)
 {
-    // Only process Message updates: https://core.telegram.org/bots/api#message
-    if (update.Message is not { } message)
-        return;
-    // Only process audio messages
-    if (message.Voice is not { })
-        return;
+    TodoController todoController = new TodoController();
+    if (update.CallbackQuery != null)
+    {
+        long id = update.CallbackQuery.Message.Chat.Id;
+        int todoId = int.Parse(update.CallbackQuery.Data);
+        todoController.DeleteTodo(id, todoId);
 
-    var path = System.Reflection.Assembly.GetExecutingAssembly().Location;
-    path = Path.GetDirectoryName(path);
-    var filePath = Path.Combine(path, message.Voice.FileId + ".ogg");
+        UpdateLocalization(todoController.GetLocalization(id));
+
+        await botClient.SendTextMessageAsync(
+        chatId: id,
+        text: localizationService.GetFormattedMessage("TaskDeleted"),
+        cancellationToken: cancellationToken);
+
+        return;
+    }
+    if (update.Message is not { } message)
+    {
+        return;
+    }
+
+    var chatId = message.Chat.Id;
+    UpdateLocalization(todoController.GetLocalization(chatId));
+    if (message.Text is null && message.Voice is null)
+    {
+        await botClient.SendTextMessageAsync(
+        chatId: chatId,
+        text: localizationService.GetFormattedMessage("NotSupportedMessage"),
+        cancellationToken: cancellationToken);
+        return;
+    }
+    string text;
+    if (message.Voice is not null)
+    {
+        text = await ParseUserAudio(message.Voice.FileId);
+    }
+    else
+    {
+        text = message.Text;
+    }
+    string command = "/switchlang";
+    text = text.ToLower();
+    if (text.StartsWith(command, true, CultureInfo.InvariantCulture))
+    {
+        string localization = text.Remove(0, command.Count());
+        todoController.ChangeLocalization(chatId, localization.Trim());
+    }
+    else if (text.StartsWith("/start", true, CultureInfo.InvariantCulture))
+    {
+        todoController.AddUser(chatId);
+    }
+    else if (text.StartsWith(localizationService.GetFormattedMessage("AddTodoKeyword").ToLower(), true, CultureInfo.InvariantCulture))
+    {
+        string add = localizationService.GetFormattedMessage("AddTodoKeyword");
+        text = text.Remove(0, add.Length);
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+        todoController.AddTodo(chatId, text);
+    }
+    else if (text.StartsWith(localizationService.GetFormattedMessage("DeleteTodoKeyword").ToLower(), true, CultureInfo.InvariantCulture))
+    {
+        var deleteKeyword = localizationService.GetFormattedMessage("DeleteTodoKeyword");
+        Todo[] todos = todoController.GetAllTodos(chatId).ToArray();
+        InlineKeyboardButton[] buttons = new InlineKeyboardButton[todos.Count()];
+        for (int i = 0; i < buttons.Length; i++)
+        {
+            InlineKeyboardButton button = new InlineKeyboardButton(todos[i].TodoId + ". " + todos[i].Title);
+            button.CallbackData = todos[i].TodoId.ToString();
+            buttons[i] = button;
+        }
+        InlineKeyboardMarkup inline = new InlineKeyboardMarkup(buttons);
+        await botClient.SendTextMessageAsync(chatId, localizationService.GetFormattedMessage("SelectTodoToDelete"), ParseMode.Html, null, false, false, false, 0, false, inline);        
+    }
+    else if (text.StartsWith(localizationService.GetFormattedMessage("ShowTodosKeyword").ToLower(), true, CultureInfo.InvariantCulture))
+    {
+        List<Todo> todoList = todoController.GetAllTodos(chatId).ToList();
+        string result = "";
+        foreach (Todo todo in todoList)
+        {
+            result += todo.Title + Environment.NewLine;
+        }
+        if (string.IsNullOrEmpty(result))
+        {
+            result = localizationService.GetFormattedMessage("NoTodos");
+        }
+        Message sentMessage = await botClient.SendTextMessageAsync(
+                chatId: chatId,
+                text: result,
+                cancellationToken: cancellationToken);
+    }
+    else
+    {
+        await botClient.SendTextMessageAsync(
+        chatId: chatId,
+        text: localizationService.GetFormattedMessage("UnknownCommand"),
+        cancellationToken: cancellationToken);
+        return;
+    }
+}
+
+void UpdateLocalization(Localization localization)
+{
+    CultureInfo ci = null;
+    switch (localization)
+    {
+        case Localization.UA:
+            ci = new CultureInfo("uk-UA");
+            break;
+        case Localization.US:
+            ci = new CultureInfo("en-US");
+            break;
+    }
+    Thread.CurrentThread.CurrentCulture = ci;
+    Thread.CurrentThread.CurrentUICulture = ci;
+}
+
+Task HandlePollingErrorAsync(ITelegramBotClient botClient, Exception exception, CancellationToken cancellationToken)
+{
+    var ErrorMessage = exception switch
+    {
+        ApiRequestException apiRequestException
+            => $"Telegram API Error:\n[{apiRequestException.ErrorCode}]\n{apiRequestException.Message}",
+        _ => exception.ToString()
+    };
+
+    Console.WriteLine(ErrorMessage);
+    return Task.CompletedTask;
+}
+
+async Task<string> ParseUserAudio(string fileId)
+{
+    var filePath = Path.Combine(path, fileId + ".ogg");
 
     using (var file = File.OpenWrite(filePath))
     {
-        await botClient.GetInfoAndDownloadFileAsync(message.Voice.FileId, file);
+        await botClient.GetInfoAndDownloadFileAsync(fileId, file);
         Console.WriteLine($"Find Voice at {filePath}");
         file.Close();
     }
 
-    var newFilePath = Path.Combine(path, message.Voice.FileId + ".wav");
+    var newFilePath = Path.Combine(path, fileId + ".wav");
     using (Stream source = File.OpenRead(filePath))
     {
         var inputFile = new InputFile(filePath);
@@ -75,8 +219,15 @@ async Task HandleUpdateAsync(ITelegramBotClient botClient, Update update, Cancel
         var output = await ffmpeg.ConvertAsync(inputFile, outputFile, conversion, default).ConfigureAwait(false);
         source.Close();
     }
-
-
+    Model model = null;
+    if (CultureInfo.CurrentCulture == new CultureInfo("en-US"))
+    {
+        model = englishModel;
+    }
+    else
+    {
+        model = ukrainianModel;
+    }
     VoskRecognizer rec = new VoskRecognizer(model, 22050.0f);
     rec.SetMaxAlternatives(0);
     rec.SetWords(true);
@@ -91,51 +242,5 @@ async Task HandleUpdateAsync(ITelegramBotClient botClient, Update update, Cancel
         source.Close();
     }
 
-    string text = rec.FinalResult();
-    Console.WriteLine(text);
-
-    var convertedSpeech = JsonConvert.DeserializeObject<VoskResult>(text);
-
-
-    var chatId = message.Chat.Id;
-
-    Console.WriteLine($"Received a '{convertedSpeech.Text}' message in chat {chatId}.");
-
-    var s = new SpeechSynthesizer();
-
-    filePath = Path.Combine(path, message.Voice.FileId + "s.wav");
-
-    var a = s.GetInstalledVoices();
-    s.SelectVoice(configuration["UkrainianVoiceForSynthesisName"]);
-    s.SetOutputToWaveFile(filePath,
-        new SpeechAudioFormatInfo(22050, AudioBitsPerSample.Sixteen, AudioChannel.Mono));
-    s.Speak(convertedSpeech.Text);
-    s.SetOutputToNull();
-
-    // Echo received message text
-    Message sentMessage = await botClient.SendTextMessageAsync(
-        chatId: chatId,
-        text: "You said:\n" + convertedSpeech.Text,
-        cancellationToken: cancellationToken);
-
-    using (var stream = File.OpenRead(filePath))
-    {
-        message = await botClient.SendVoiceAsync(
-            chatId: chatId,
-            voice: stream,
-            cancellationToken: cancellationToken);
-    }
-}
-
-Task HandlePollingErrorAsync(ITelegramBotClient botClient, Exception exception, CancellationToken cancellationToken)
-{
-    var ErrorMessage = exception switch
-    {
-        ApiRequestException apiRequestException
-            => $"Telegram API Error:\n[{apiRequestException.ErrorCode}]\n{apiRequestException.Message}",
-        _ => exception.ToString()
-    };
-
-    Console.WriteLine(ErrorMessage);
-    return Task.CompletedTask;
+    return JsonConvert.DeserializeObject<VoskResult>(rec.FinalResult()).Text;
 }
